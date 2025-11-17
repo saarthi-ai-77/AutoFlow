@@ -11,7 +11,7 @@ class HTTPNode {
     icon = '🌐';
     version = '1.0.0';
     inputs = zod_1.z.object({
-        url: zod_1.z.string().describe('HTTP endpoint URL'),
+        url: zod_1.z.string().url().max(2048, 'URL must be less than 2048 characters').describe('HTTP endpoint URL'),
         method: zod_1.z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).describe('HTTP method'),
         headers: zod_1.z.record(zod_1.z.string()).optional().describe('HTTP headers'),
         body: zod_1.z.record(zod_1.z.any()).optional().describe('Request body (for POST/PUT/PATCH)'),

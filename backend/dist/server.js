@@ -15,6 +15,7 @@ const logger_1 = require("@/utils/logger");
 const connection_1 = require("@/database/connection");
 const migrate_1 = require("@/database/migrate");
 const execution_1 = require("@/services/execution");
+const ioredis_1 = __importDefault(require("ioredis"));
 const security_1 = require("@/api/middleware/security");
 const auth_1 = require("@/api/routes/auth");
 const workflows_1 = require("@/api/routes/workflows");
@@ -64,10 +65,15 @@ const app = (0, express_1.default)();
 exports.app = app;
 const server = (0, http_1.createServer)(app);
 exports.server = server;
+// Create Redis instance for health checks
+const redis = new ioredis_1.default(environment_1.env.REDIS_URL, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 3,
+});
 // Create Socket.IO server
 const io = new socket_io_1.Server(server, {
     cors: {
-        origin: security_1.corsMiddleware,
+        origin: security_1.corsOriginValidator,
         credentials: true,
         methods: ['GET', 'POST']
     },
@@ -76,29 +82,44 @@ const io = new socket_io_1.Server(server, {
     pingInterval: 25000,
 });
 exports.io = io;
-// Health check route (must be first, before rate limiting)
-app.get('/health', async (req, res) => {
+// Comprehensive health check endpoint
+app.get('/api/health', async (req, res) => {
     try {
+        // Check PostgreSQL connectivity
         const dbHealthy = await connection_1.databaseService.healthCheck();
-        const queueHealthy = true; // Simple check for queue health
+        // Check Redis connectivity
+        let redisHealthy = false;
+        try {
+            await redis.ping();
+            redisHealthy = true;
+        }
+        catch (error) {
+            logger_1.logger.warn('Redis health check failed', { error });
+        }
+        // Check WebSocket server status
+        const wsHealthy = io && io.sockets && io.sockets.sockets.size >= 0;
+        // Check disk space (simplified - in production use system calls)
+        const diskHealthy = true; // Placeholder - implement actual disk check
+        const services = {
+            database: dbHealthy ? 'healthy' : 'unhealthy',
+            redis: redisHealthy ? 'healthy' : 'unhealthy',
+            websocket: wsHealthy ? 'healthy' : 'unhealthy',
+            disk: diskHealthy ? 'healthy' : 'warning',
+        };
+        const overallHealthy = dbHealthy && redisHealthy && wsHealthy;
         const healthStatus = {
-            status: 'healthy',
+            status: overallHealthy ? 'healthy' : 'unhealthy',
             timestamp: new Date().toISOString(),
             uptime: Math.floor(process.uptime()),
             version: '1.0.0',
-            services: {
-                database: dbHealthy ? 'healthy' : 'unhealthy',
-                queue: queueHealthy ? 'healthy' : 'unhealthy',
-                server: 'healthy',
-            },
+            services,
             memory: process.memoryUsage(),
+            activeConnections: io ? io.sockets.sockets.size : 0,
         };
-        // Return unhealthy status if critical services are down
-        const overallHealthy = dbHealthy && queueHealthy;
         res.status(overallHealthy ? 200 : 503).json(healthStatus);
-        logger_1.logger.info('Health check completed', {
+        logger_1.logger.info('Deep health check completed', {
             overallHealthy,
-            services: healthStatus.services
+            services
         });
     }
     catch (error) {
@@ -109,6 +130,23 @@ app.get('/health', async (req, res) => {
             error: 'Health check failed',
         });
     }
+});
+// Readiness probe endpoint
+app.get('/api/ready', (req, res) => {
+    // Simple check if server is listening
+    res.status(200).json({
+        status: 'ready',
+        timestamp: new Date().toISOString(),
+    });
+});
+// Liveness probe endpoint
+app.get('/api/live', (req, res) => {
+    // Always return 200 if process is alive
+    res.status(200).json({
+        status: 'alive',
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime()),
+    });
 });
 // Basic middleware (no auth required)
 app.use(security_1.securityHeaders);
@@ -166,7 +204,7 @@ app.get('/api', (req, res) => {
 app.use(security_1.notFoundHandler);
 app.use(security_1.errorHandler);
 // Initialize WebSocket service
-websocket_1.websocketService.initialize(io);
+websocket_1.websocketSecurityService.initialize(io);
 // Graceful shutdown handling
 const gracefulShutdown = async (signal) => {
     logger_1.logger.info(`Received ${signal}, starting graceful shutdown...`);

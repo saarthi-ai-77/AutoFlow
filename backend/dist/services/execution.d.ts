@@ -146,6 +146,7 @@ export declare class ExecutionService {
         limit?: number;
         startDate?: Date;
         endDate?: Date;
+        cursor?: string;
     }): Promise<any>;
     retryExecution(executionId: string, userId: string): Promise<string>;
     cancelExecution(executionId: string, userId: string): Promise<void>;

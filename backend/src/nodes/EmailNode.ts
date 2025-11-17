@@ -11,17 +11,17 @@ export class EmailNode implements NodeDefinition {
   version = '1.0.0';
 
   inputs = z.object({
-    to: z.string().describe('Recipient email address'),
-    subject: z.string().describe('Email subject'),
-    body: z.string().describe('Email body content'),
-    from: z.string().optional().describe('Sender email address'),
-    cc: z.string().optional().describe('CC email address'),
-    bcc: z.string().optional().describe('BCC email address'),
+    to: z.string().email().max(254).describe('Recipient email address'),
+    subject: z.string().min(1).max(998).describe('Email subject'),
+    body: z.string().min(1).max(1000000).describe('Email body content'),
+    from: z.string().email().max(254).optional().describe('Sender email address'),
+    cc: z.string().email().max(254).optional().describe('CC email address'),
+    bcc: z.string().email().max(254).optional().describe('BCC email address'),
     attachments: z.array(z.object({
-      filename: z.string(),
-      content: z.string(),
-      contentType: z.string().optional(),
-    })).optional().describe('Email attachments'),
+      filename: z.string().min(1).max(255),
+      content: z.string().max(10000000), // 10MB max per attachment
+      contentType: z.string().max(100).optional(),
+    })).max(10).optional().describe('Email attachments'),
   });
 
   outputs = z.object({

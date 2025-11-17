@@ -11,7 +11,7 @@ export class HTTPNode implements NodeDefinition {
   version = '1.0.0';
 
   inputs = z.object({
-    url: z.string().describe('HTTP endpoint URL'),
+    url: z.string().url().max(2048, 'URL must be less than 2048 characters').describe('HTTP endpoint URL'),
     method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).describe('HTTP method'),
     headers: z.record(z.string()).optional().describe('HTTP headers'),
     body: z.record(z.any()).optional().describe('Request body (for POST/PUT/PATCH)'),

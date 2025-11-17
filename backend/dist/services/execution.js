@@ -14,9 +14,15 @@ const workflow_1 = require("./workflow");
 const ioredis_1 = __importDefault(require("ioredis"));
 // Redis connection for queue
 const redisConfig = {
-    host: 'localhost',
-    port: 6379,
-    ...(process.env.REDIS_PASSWORD && { password: process.env.REDIS_PASSWORD }),
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379'),
+    password: process.env.REDIS_PASSWORD || undefined,
+    lazyConnect: true,
+    maxRetriesPerRequest: 3,
+    retryDelayOnFailover: 100,
+    enableReadyCheck: true,
+    connectionTimeout: 5000,
+    commandTimeout: 5000,
 };
 const redis = new ioredis_1.default(redisConfig);
 // Create queue
@@ -166,48 +172,74 @@ class ExecutionService {
     }
     async getExecutions(workflowId, userId, options = {}) {
         try {
-            const { status, page = 1, limit = 10, startDate, endDate } = options;
+            const { status, page = 1, limit = 10, startDate, endDate, cursor } = options;
             const offset = (page - 1) * limit;
+            // Use JOIN to filter by user access and get workflow info in single query
             let query = connection_1.db
                 .selectFrom('executions')
+                .innerJoin('workflows', 'workflows.id', 'executions.workflow_id')
                 .select([
-                'id',
-                'workflow_id',
-                'status',
-                'started_at',
-                'completed_at',
-                'execution_time_ms',
-                'error_message',
-                'created_at',
-                'updated_at',
-            ]);
+                'executions.id',
+                'executions.workflow_id',
+                'executions.status',
+                'executions.started_at',
+                'executions.completed_at',
+                'executions.execution_time_ms',
+                'executions.error_message',
+                'executions.created_at',
+                'executions.updated_at',
+                'workflows.name as workflow_name',
+                'workflows.owner_id',
+                'workflows.is_public',
+            ])
+                .where('workflows.is_active', '=', true);
+            // Filter by user access: owner or public
+            if (userId) {
+                query = query.where((eb) => eb.or([
+                    eb('workflows.owner_id', '=', userId),
+                    eb('workflows.is_public', '=', true)
+                ]));
+            }
+            else {
+                // If no userId, only show public workflows
+                query = query.where('workflows.is_public', '=', true);
+            }
             if (workflowId) {
-                query = query.where('workflow_id', '=', workflowId);
+                query = query.where('executions.workflow_id', '=', workflowId);
             }
             if (status) {
-                query = query.where('status', '=', status);
+                query = query.where('executions.status', '=', status);
             }
             if (startDate) {
-                query = query.where('created_at', '>=', startDate);
+                query = query.where('executions.created_at', '>=', startDate);
             }
             if (endDate) {
-                query = query.where('created_at', '<=', endDate);
+                query = query.where('executions.created_at', '<=', endDate);
             }
-            // Get total count
-            const countQuery = query.select(({ fn }) => fn.countAll().as('count'));
-            const totalResult = await countQuery.executeTakeFirst();
-            const total = parseInt(totalResult?.count) || 0;
-            // Apply pagination and ordering
+            // Cursor-based pagination
+            if (cursor) {
+                const cursorDate = new Date(cursor);
+                query = query.where('executions.created_at', '<', cursorDate);
+            }
+            // Get total count (for backward compatibility, but expensive for large datasets)
+            let total = 0;
+            if (!cursor) {
+                const countQuery = query.select(({ fn }) => fn.countAll().as('count'));
+                const totalResult = await countQuery.executeTakeFirst();
+                total = parseInt(totalResult?.count) || 0;
+            }
+            // Apply ordering and pagination
             const executions = await query
-                .orderBy('created_at', 'desc')
+                .orderBy('executions.created_at', 'desc')
                 .limit(limit)
-                .offset(offset)
                 .execute();
-            const totalPages = Math.ceil(total / limit);
+            // For cursor pagination, next cursor is the last item's created_at
+            const nextCursor = executions.length === limit ? executions[executions.length - 1].created_at.toISOString() : null;
             return {
                 executions: executions.map(e => ({
                     id: e.id,
                     workflowId: e.workflow_id,
+                    workflowName: e.workflow_name,
                     status: e.status,
                     startedAt: e.started_at,
                     completedAt: e.completed_at,
@@ -216,12 +248,16 @@ class ExecutionService {
                     createdAt: e.created_at,
                     updatedAt: e.updated_at,
                 })),
-                pagination: {
+                pagination: cursor ? {
+                    cursor: nextCursor,
+                    hasNext: !!nextCursor,
+                    limit,
+                } : {
                     page,
                     limit,
                     total,
-                    totalPages,
-                    hasNext: page < totalPages,
+                    totalPages: Math.ceil(total / limit),
+                    hasNext: page < Math.ceil(total / limit),
                     hasPrev: page > 1,
                 },
             };

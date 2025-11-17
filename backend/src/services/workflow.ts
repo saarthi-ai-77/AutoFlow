@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '@/database/connection';
 import { logger } from '@/utils/logger';
+import { cacheService } from '@/utils/redis-cache';
 
 // Workflow validation schemas
 export const WorkflowNodeSchema = z.object({
@@ -217,7 +218,7 @@ export class WorkflowService {
       // Get total count
       const countQuery = query.select(({ fn }) => fn.countAll().as('count'));
       const totalResult = await countQuery.executeTakeFirst();
-      const total = parseInt(totalResult?.count as string) || 0;
+      const total = parseInt((totalResult as any)?.count as string) || 0;
 
       // Apply pagination and ordering
       const workflows = await query
@@ -260,6 +261,17 @@ export class WorkflowService {
 
   async getWorkflowById(id: string, userId?: string): Promise<Workflow | null> {
     try {
+      // Try cache first
+      const cachedWorkflow = await cacheService.get(`workflow:${id}`);
+      if (cachedWorkflow) {
+        // Check access permissions for cached workflow
+        if (!cachedWorkflow.isPublic && cachedWorkflow.ownerId !== userId) {
+          throw new Error('Access denied');
+        }
+        return cachedWorkflow;
+      }
+
+      // Cache miss, fetch from database
       const workflow = await db
         .selectFrom('workflows')
         .selectAll()
@@ -276,7 +288,7 @@ export class WorkflowService {
         throw new Error('Access denied');
       }
 
-      return {
+      const workflowData = {
         id: workflow.id,
         name: workflow.name,
         description: workflow.description,
@@ -292,6 +304,11 @@ export class WorkflowService {
         createdAt: workflow.created_at,
         updatedAt: workflow.updated_at,
       };
+
+      // Cache the workflow for 5 minutes
+      await cacheService.set(`workflow:${id}`, workflowData, 300);
+
+      return workflowData;
     } catch (error) {
       logger.error('Failed to get workflow by ID', { error, id, userId });
       throw error;
@@ -343,6 +360,9 @@ export class WorkflowService {
         throw new Error('Failed to update workflow');
       }
 
+      // Invalidate cache
+      await cacheService.delete(`workflow:${id}`);
+
       logger.info('Workflow updated successfully', { workflowId: id, userId, version: updatedWorkflow.version });
       return updatedWorkflow;
     } catch (error) {
@@ -369,6 +389,9 @@ export class WorkflowService {
         .set({ is_active: false })
         .where('id', '=', id)
         .execute();
+
+      // Invalidate cache
+      await cacheService.delete(`workflow:${id}`);
 
       logger.info('Workflow deleted successfully', { workflowId: id, userId });
     } catch (error) {
@@ -431,8 +454,8 @@ export class WorkflowService {
 
       const statusStats = await db
         .selectFrom('executions')
-        .select('status')
-        .addSelect(({ fn }) => fn.countAll().as('count'))
+        .select('status' as any)
+        .addSelect(({ fn }) => fn.countAll().as('count') as any)
         .where('workflow_id', '=', workflowId)
         .groupBy('status')
         .execute();

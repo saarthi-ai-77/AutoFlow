@@ -1,9 +1,11 @@
 import { Kysely } from 'kysely';
+import { Pool } from 'pg';
 export interface Database {
     users: UserTable;
     workflows: WorkflowTable;
     executions: ExecutionTable;
     api_keys: ApiKeyTable;
+    refresh_tokens: RefreshTokenTable;
 }
 export interface UserTable {
     id: string;
@@ -16,6 +18,10 @@ export interface UserTable {
     updated_at: Date;
     last_login_at?: Date;
     is_active: boolean;
+    email_verified: boolean;
+    failed_login_attempts: number;
+    last_failed_login_at?: Date;
+    token_version: number;
 }
 export interface WorkflowTable {
     id: string;
@@ -58,7 +64,17 @@ export interface ApiKeyTable {
     updated_at: Date;
     is_active: boolean;
 }
-declare const pool: any;
+export interface RefreshTokenTable {
+    id: string;
+    user_id: string;
+    token_hash: string;
+    token_id: string;
+    is_used: boolean;
+    expires_at: Date;
+    created_at: Date;
+    used_at?: Date;
+}
+declare const pool: Pool;
 export declare const db: Kysely<Database>;
 export declare const databaseService: {
     query<T = any>(query: string, params?: any[]): Promise<T[]>;

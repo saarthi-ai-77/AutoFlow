@@ -8,9 +8,12 @@ const logger_1 = require("@/utils/logger");
 // Create database instance
 const pool = new pg_1.Pool({
     connectionString: environment_1.env.DATABASE_URL,
-    max: 10,
+    min: 5,
+    max: 20,
     idleTimeoutMillis: 60000,
     connectionTimeoutMillis: 2000,
+    query_timeout: 30000, // 30 seconds statement timeout
+    statement_timeout: 30000, // 30 seconds statement timeout
 });
 exports.pool = pool;
 exports.db = new kysely_1.Kysely({

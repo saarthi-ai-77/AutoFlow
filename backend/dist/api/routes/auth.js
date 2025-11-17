@@ -55,9 +55,21 @@ router.post('/login', async (req, res) => {
             email: validatedData.email,
             password: validatedData.password,
         });
+        // Set refresh token as httpOnly cookie
+        res.cookie('refreshToken', result.tokens.refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        });
+        // Return only access token in response
         res.json({
             message: 'Login successful',
-            data: result,
+            data: {
+                user: result.user,
+                accessToken: result.tokens.accessToken,
+                expiresIn: result.tokens.expiresIn,
+            },
         });
         logger_1.logger.info('User login successful', {
             userId: result.user.id,
@@ -88,11 +100,29 @@ router.post('/login', async (req, res) => {
 // Refresh token endpoint
 router.post('/refresh', async (req, res) => {
     try {
-        const validatedData = auth_1.RefreshTokenSchema.parse(req.body);
-        const tokens = await auth_1.authService.refreshToken(validatedData.refreshToken);
+        // Get refresh token from cookie or body
+        const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
+        if (!refreshToken) {
+            return res.status(401).json({
+                error: 'Refresh token required',
+                code: 'REFRESH_TOKEN_REQUIRED',
+            });
+        }
+        const tokens = await auth_1.authService.refreshToken(refreshToken);
+        // Set new refresh token as httpOnly cookie
+        res.cookie('refreshToken', tokens.refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        });
+        // Return only access token in response
         res.json({
             message: 'Token refreshed successfully',
-            data: { tokens },
+            data: {
+                accessToken: tokens.accessToken,
+                expiresIn: tokens.expiresIn,
+            },
         });
         logger_1.logger.info('Token refresh successful');
     }
@@ -148,6 +178,7 @@ router.get('/me', async (req, res) => {
 router.post('/logout', async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
+        const refreshToken = req.cookies.refreshToken;
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.substring(7);
             const payload = await auth_1.authService.verifyToken(token);
@@ -155,6 +186,12 @@ router.post('/logout', async (req, res) => {
                 await auth_1.authService.logout(payload.userId, payload.tokenId);
             }
         }
+        // Clear refresh token cookie
+        res.clearCookie('refreshToken', {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+        });
         res.json({
             message: 'Logout successful',
         });

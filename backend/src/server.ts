@@ -14,12 +14,14 @@ import { logger } from '@/utils/logger';
 import { databaseService } from '@/database/connection';
 import { migrationManager } from '@/database/migrate';
 import { executionQueue } from '@/services/execution';
-import { 
-  requestLogger, 
-  securityHeaders, 
-  errorHandler, 
+import Redis from 'ioredis';
+import {
+  requestLogger,
+  securityHeaders,
+  errorHandler,
   notFoundHandler,
   corsMiddleware,
+  corsOriginValidator,
   helmetMiddleware,
   compressionMiddleware,
   generalRateLimiter,
@@ -29,7 +31,7 @@ import { authenticate } from '@/api/middleware/auth';
 import { authRoutes } from '@/api/routes/auth';
 import { workflowRoutes } from '@/api/routes/workflows';
 import { executionRoutes } from '@/api/routes/executions';
-import { websocketService } from '@/websocket';
+import { websocketSecurityService } from '@/websocket';
 
 // Swagger configuration
 const swaggerOptions = {
@@ -76,10 +78,16 @@ const swaggerSpec = swaggerJSDoc(swaggerOptions);
 const app = express();
 const server = createServer(app);
 
+// Create Redis instance for health checks
+const redis = new Redis(env.REDIS_URL, {
+  lazyConnect: true,
+  maxRetriesPerRequest: 3,
+});
+
 // Create Socket.IO server
 const io = new Server(server, {
   cors: {
-    origin: corsMiddleware,
+    origin: corsOriginValidator,
     credentials: true,
     methods: ['GET', 'POST']
   },
@@ -88,33 +96,51 @@ const io = new Server(server, {
   pingInterval: 25000,
 });
 
-// Health check route (must be first, before rate limiting)
-app.get('/health', async (req: Request, res: Response) => {
+// Comprehensive health check endpoint
+app.get('/api/health', async (req: Request, res: Response) => {
   try {
+    // Check PostgreSQL connectivity
     const dbHealthy = await databaseService.healthCheck();
-    const queueHealthy = true; // Simple check for queue health
-    
+
+    // Check Redis connectivity
+    let redisHealthy = false;
+    try {
+      await redis.ping();
+      redisHealthy = true;
+    } catch (error) {
+      logger.warn('Redis health check failed', { error });
+    }
+
+    // Check WebSocket server status
+    const wsHealthy = io && io.sockets && io.sockets.sockets.size >= 0;
+
+    // Check disk space (simplified - in production use system calls)
+    const diskHealthy = true; // Placeholder - implement actual disk check
+
+    const services = {
+      database: dbHealthy ? 'healthy' : 'unhealthy',
+      redis: redisHealthy ? 'healthy' : 'unhealthy',
+      websocket: wsHealthy ? 'healthy' : 'unhealthy',
+      disk: diskHealthy ? 'healthy' : 'warning',
+    };
+
+    const overallHealthy = dbHealthy && redisHealthy && wsHealthy;
+
     const healthStatus = {
-      status: 'healthy',
+      status: overallHealthy ? 'healthy' : 'unhealthy',
       timestamp: new Date().toISOString(),
       uptime: Math.floor(process.uptime()),
       version: '1.0.0',
-      services: {
-        database: dbHealthy ? 'healthy' : 'unhealthy',
-        queue: queueHealthy ? 'healthy' : 'unhealthy',
-        server: 'healthy',
-      },
+      services,
       memory: process.memoryUsage(),
+      activeConnections: io ? io.sockets.sockets.size : 0,
     };
 
-    // Return unhealthy status if critical services are down
-    const overallHealthy = dbHealthy && queueHealthy;
-    
     res.status(overallHealthy ? 200 : 503).json(healthStatus);
-    
-    logger.info('Health check completed', {
+
+    logger.info('Deep health check completed', {
       overallHealthy,
-      services: healthStatus.services
+      services
     });
   } catch (error) {
     logger.error('Health check failed', { error });
@@ -124,6 +150,25 @@ app.get('/health', async (req: Request, res: Response) => {
       error: 'Health check failed',
     });
   }
+});
+
+// Readiness probe endpoint
+app.get('/api/ready', (req: Request, res: Response) => {
+  // Simple check if server is listening
+  res.status(200).json({
+    status: 'ready',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Liveness probe endpoint
+app.get('/api/live', (req: Request, res: Response) => {
+  // Always return 200 if process is alive
+  res.status(200).json({
+    status: 'alive',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(process.uptime()),
+  });
 });
 
 // Basic middleware (no auth required)
@@ -190,7 +235,7 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 // Initialize WebSocket service
-websocketService.initialize(io);
+websocketSecurityService.initialize(io);
 
 // Graceful shutdown handling
 const gracefulShutdown = async (signal: string) => {

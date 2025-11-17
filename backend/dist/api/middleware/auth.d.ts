@@ -10,7 +10,7 @@ declare global {
 export interface AuthenticatedRequest extends Request {
     user: JWTPayload;
 }
-export declare const authenticate: (req: Request, res: Response, next: NextFunction) => Promise<Response<any, Record<string, any>> | undefined>;
+export declare const authenticate: (req: Request, res: Response, next: NextFunction) => Promise<void | Response<any, Record<string, any>>>;
 export declare const requireRole: (roles: string[]) => (req: Request, res: Response, next: NextFunction) => Response<any, Record<string, any>> | undefined;
 export declare const requireOwnership: (resourceUserIdField?: string) => (req: Request, res: Response, next: NextFunction) => Promise<void | Response<any, Record<string, any>>>;
 export declare const optionalAuth: (req: Request, res: Response, next: NextFunction) => Promise<void>;

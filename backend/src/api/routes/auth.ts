@@ -54,20 +54,33 @@ router.post('/register', async (req: Request, res: Response) => {
 router.post('/login', async (req: Request, res: Response) => {
   try {
     const validatedData = LoginSchema.parse(req.body);
-    
+
     const result = await authService.login({
       email: validatedData.email,
       password: validatedData.password,
     });
 
-    res.json({
-      message: 'Login successful',
-      data: result,
+    // Set refresh token as httpOnly cookie
+    res.cookie('refreshToken', result.tokens.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
-    logger.info('User login successful', { 
-      userId: result.user.id, 
-      email: result.user.email 
+    // Return only access token in response
+    res.json({
+      message: 'Login successful',
+      data: {
+        user: result.user,
+        accessToken: result.tokens.accessToken,
+        expiresIn: result.tokens.expiresIn,
+      },
+    });
+
+    logger.info('User login successful', {
+      userId: result.user.id,
+      email: result.user.email
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -96,13 +109,33 @@ router.post('/login', async (req: Request, res: Response) => {
 // Refresh token endpoint
 router.post('/refresh', async (req: Request, res: Response) => {
   try {
-    const validatedData = RefreshTokenSchema.parse(req.body);
-    
-    const tokens = await authService.refreshToken(validatedData.refreshToken);
+    // Get refresh token from cookie or body
+    const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
 
+    if (!refreshToken) {
+      return res.status(401).json({
+        error: 'Refresh token required',
+        code: 'REFRESH_TOKEN_REQUIRED',
+      });
+    }
+
+    const tokens = await authService.refreshToken(refreshToken);
+
+    // Set new refresh token as httpOnly cookie
+    res.cookie('refreshToken', tokens.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    // Return only access token in response
     res.json({
       message: 'Token refreshed successfully',
-      data: { tokens },
+      data: {
+        accessToken: tokens.accessToken,
+        expiresIn: tokens.expiresIn,
+      },
     });
 
     logger.info('Token refresh successful');
@@ -166,15 +199,23 @@ router.get('/me', async (req: Request, res: Response) => {
 router.post('/logout', async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
-    
+    const refreshToken = req.cookies.refreshToken;
+
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
       const payload = await authService.verifyToken(token);
-      
+
       if (payload) {
         await authService.logout(payload.userId, payload.tokenId);
       }
     }
+
+    // Clear refresh token cookie
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+    });
 
     res.json({
       message: 'Logout successful',

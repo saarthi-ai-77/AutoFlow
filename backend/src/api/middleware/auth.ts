@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import { authService } from '@/services/auth';
 import { logger } from '@/utils/logger';
 import { JWTPayload } from '@/services/auth';
+import { hashApiKey } from '@/utils/security';
+import { db } from '@/database/connection';
 
 // Extend Express Request type to include user
 declare global {
@@ -19,27 +21,116 @@ export interface AuthenticatedRequest extends Request {
 export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        error: 'Access token required',
-        code: 'UNAUTHORIZED'
-      });
+    const apiKey = req.headers['x-api-key'] as string;
+
+    // Try JWT authentication first
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+
+      const payload = await authService.verifyToken(token);
+
+      if (payload) {
+        (req as any).user = payload;
+        return next();
+      }
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-    
-    const payload = await authService.verifyToken(token);
-    
-    if (!payload) {
-      return res.status(401).json({
-        error: 'Invalid or expired token',
-        code: 'TOKEN_INVALID'
-      });
+    // If JWT failed or not provided, try API key authentication
+    if (apiKey) {
+      try {
+        // Validate API key format
+        const isValidFormat = /^[a-zA-Z0-9\-_.]+$/.test(apiKey);
+        if (!isValidFormat) {
+          logger.warn('Invalid API key format', {
+            apiKeyPreview: apiKey.substring(0, 10) + '...',
+            userAgent: req.get('User-Agent'),
+            ip: req.ip
+          });
+          return res.status(401).json({
+            error: 'Invalid API key format',
+            code: 'INVALID_API_KEY_FORMAT'
+          });
+        }
+
+        // Validate API key against database
+        const keyHash = await hashApiKey(apiKey);
+        const apiKeyRecord = await db
+          .selectFrom('api_keys')
+          .selectAll()
+          .where('key_hash', '=', keyHash)
+          .where('is_active', '=', true)
+          .where('expires_at', '>', new Date())
+          .executeTakeFirst();
+
+        if (!apiKeyRecord) {
+          logger.warn('Invalid API key', {
+            apiKeyPreview: apiKey.substring(0, 10) + '...',
+            userAgent: req.get('User-Agent'),
+            ip: req.ip
+          });
+          return res.status(401).json({
+            error: 'Invalid API key',
+            code: 'INVALID_API_KEY'
+          });
+        }
+
+        // Get user associated with API key
+        const user = await db
+          .selectFrom('users')
+          .select(['id', 'email', 'role', 'is_active'])
+          .where('id', '=', apiKeyRecord.user_id)
+          .where('is_active', '=', true)
+          .executeTakeFirst();
+
+        if (!user) {
+          logger.warn('API key user not found or inactive', {
+            apiKeyId: apiKeyRecord.id,
+            userId: apiKeyRecord.user_id
+          });
+          return res.status(401).json({
+            error: 'API key user not found',
+            code: 'API_KEY_USER_INACTIVE'
+          });
+        }
+
+        // Attach user and API key info to request
+        (req as any).user = {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          apiKeyId: apiKeyRecord.id,
+          scopes: apiKeyRecord.scopes,
+        };
+
+        // Update last used timestamp
+        await db
+          .updateTable('api_keys')
+          .set({ last_used_at: new Date() })
+          .where('id', '=', apiKeyRecord.id)
+          .execute();
+
+        logger.debug('API key authenticated successfully', {
+          apiKeyId: apiKeyRecord.id,
+          userId: user.id,
+          path: req.path,
+          method: req.method
+        });
+
+        return next();
+      } catch (error) {
+        logger.error('API key authentication error', { error });
+        return res.status(500).json({
+          error: 'Internal server error',
+          code: 'INTERNAL_ERROR'
+        });
+      }
     }
 
-    (req as any).user = payload;
-    next();
+    // No valid authentication found
+    return res.status(401).json({
+      error: 'Authentication required (Bearer token or API key)',
+      code: 'UNAUTHORIZED'
+    });
   } catch (error) {
     logger.error('Authentication error', { error });
     return res.status(401).json({

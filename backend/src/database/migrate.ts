@@ -85,7 +85,11 @@ const migrations: Migration[] = [
       CREATE INDEX idx_users_email ON users(email);
       CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
       CREATE INDEX idx_api_keys_hash ON api_keys(key_hash);
-      
+
+      -- Composite indexes for common query patterns
+      CREATE INDEX idx_executions_workflow_created ON executions(workflow_id, created_at DESC);
+      CREATE INDEX idx_executions_status_created ON executions(status, created_at DESC);
+
       -- Create GIN indexes for JSONB columns
       CREATE INDEX idx_workflows_graph ON workflows USING GIN (graph);
       CREATE INDEX idx_executions_trigger_data ON executions USING GIN (trigger_data);
@@ -122,9 +126,41 @@ const migrations: Migration[] = [
       ALTER TABLE workflows ADD COLUMN execution_count INTEGER DEFAULT 0;
       ALTER TABLE workflows ADD COLUMN last_executed_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE workflows ADD COLUMN avg_execution_time_ms INTEGER;
-      
+
       -- Create index on workflow execution metrics
       CREATE INDEX idx_workflows_execution_metrics ON workflows(execution_count, last_executed_at);
+    `
+  },
+  {
+    version: '003_add_security_fields',
+    name: 'Add security fields to users table',
+    up: `
+      -- Add security fields to users table
+      ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT false;
+      ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0;
+      ALTER TABLE users ADD COLUMN last_failed_login_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1;
+
+      -- Create refresh tokens table for token rotation
+      CREATE TABLE refresh_tokens (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        token_hash VARCHAR(255) NOT NULL UNIQUE,
+        token_id VARCHAR(255) NOT NULL,
+        is_used BOOLEAN DEFAULT false,
+        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        used_at TIMESTAMP WITH TIME ZONE
+      );
+
+      -- Create indexes for refresh tokens
+      CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+      CREATE INDEX idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
+      CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
+
+      -- Apply trigger to refresh_tokens
+      CREATE TRIGGER update_refresh_tokens_updated_at BEFORE UPDATE ON refresh_tokens
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
     `
   }
 ];
@@ -148,7 +184,7 @@ class MigrationManager {
   async getAppliedMigrations(): Promise<string[]> {
     const query = `SELECT version FROM ${this.tableName} ORDER BY version;`;
     const result = await pool.query(query);
-    return result.rows.map(row => row.version);
+    return result.rows.map((row: any) => row.version);
   }
 
   async applyMigration(migration: Migration): Promise<void> {

@@ -1,10 +1,9 @@
-import { z } from 'zod';
-export declare const RegisterSchema: z.ZodObject<{
-    email: z.ZodString;
-    password: z.ZodString;
-    firstName: z.ZodString;
-    lastName: z.ZodString;
-}, "strip", z.ZodTypeAny, {
+export declare const RegisterSchema: import("zod").ZodObject<{
+    email: import("zod").ZodEffects<import("zod").ZodEffects<import("zod").ZodString, string, string>, string, string>;
+    password: import("zod").ZodEffects<import("zod").ZodEffects<import("zod").ZodEffects<import("zod").ZodEffects<import("zod").ZodEffects<import("zod").ZodEffects<import("zod").ZodString, string, string>, string, string>, string, string>, string, string>, string, string>, string, string>;
+    firstName: import("zod").ZodEffects<import("zod").ZodString, string, string>;
+    lastName: import("zod").ZodEffects<import("zod").ZodString, string, string>;
+}, "strip", import("zod").ZodTypeAny, {
     password: string;
     email: string;
     firstName: string;
@@ -15,19 +14,19 @@ export declare const RegisterSchema: z.ZodObject<{
     firstName: string;
     lastName: string;
 }>;
-export declare const LoginSchema: z.ZodObject<{
-    email: z.ZodString;
-    password: z.ZodString;
-}, "strip", z.ZodTypeAny, {
+export declare const LoginSchema: import("zod").ZodObject<{
+    email: import("zod").ZodEffects<import("zod").ZodEffects<import("zod").ZodString, string, string>, string, string>;
+    password: import("zod").ZodString;
+}, "strip", import("zod").ZodTypeAny, {
     password: string;
     email: string;
 }, {
     password: string;
     email: string;
 }>;
-export declare const RefreshTokenSchema: z.ZodObject<{
-    refreshToken: z.ZodString;
-}, "strip", z.ZodTypeAny, {
+export declare const RefreshTokenSchema: import("zod").ZodObject<{
+    refreshToken: import("zod").ZodString;
+}, "strip", import("zod").ZodTypeAny, {
     refreshToken: string;
 }, {
     refreshToken: string;
@@ -47,6 +46,7 @@ export interface JWTPayload {
     email: string;
     role: string;
     tokenId: string;
+    version: number;
 }
 export interface AuthTokens {
     accessToken: string;
@@ -78,19 +78,16 @@ export declare class AuthService {
         tokens: AuthTokens;
     }>;
     refreshToken(refreshToken: string): Promise<AuthTokens>;
-    getUserById(userId: string): Promise<{
-        id: string;
-        email: string;
-        firstName: string | undefined;
-        lastName: string | undefined;
-        role: "user" | "admin";
-        createdAt: Date;
-        lastLoginAt: Date | undefined;
-    }>;
+    getUserById(userId: string): Promise<any>;
     verifyToken(token: string): Promise<JWTPayload | null>;
+    invalidateUserTokens(userId: string): Promise<void>;
     private generateTokens;
     private getExpirationTime;
     logout(userId: string, tokenId: string): Promise<boolean>;
+    private checkLoginRateLimit;
+    private recordFailedLoginAttempt;
+    private resetFailedLoginAttempts;
+    private isAccountLocked;
 }
 export declare const authService: AuthService;
 //# sourceMappingURL=auth.d.ts.map

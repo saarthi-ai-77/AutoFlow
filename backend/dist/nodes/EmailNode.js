@@ -11,17 +11,17 @@ class EmailNode {
     icon = '📧';
     version = '1.0.0';
     inputs = zod_1.z.object({
-        to: zod_1.z.string().describe('Recipient email address'),
-        subject: zod_1.z.string().describe('Email subject'),
-        body: zod_1.z.string().describe('Email body content'),
-        from: zod_1.z.string().optional().describe('Sender email address'),
-        cc: zod_1.z.string().optional().describe('CC email address'),
-        bcc: zod_1.z.string().optional().describe('BCC email address'),
+        to: zod_1.z.string().email().max(254).describe('Recipient email address'),
+        subject: zod_1.z.string().min(1).max(998).describe('Email subject'),
+        body: zod_1.z.string().min(1).max(1000000).describe('Email body content'),
+        from: zod_1.z.string().email().max(254).optional().describe('Sender email address'),
+        cc: zod_1.z.string().email().max(254).optional().describe('CC email address'),
+        bcc: zod_1.z.string().email().max(254).optional().describe('BCC email address'),
         attachments: zod_1.z.array(zod_1.z.object({
-            filename: zod_1.z.string(),
-            content: zod_1.z.string(),
-            contentType: zod_1.z.string().optional(),
-        })).optional().describe('Email attachments'),
+            filename: zod_1.z.string().min(1).max(255),
+            content: zod_1.z.string().max(10000000), // 10MB max per attachment
+            contentType: zod_1.z.string().max(100).optional(),
+        })).max(10).optional().describe('Email attachments'),
     });
     outputs = zod_1.z.object({
         messageId: zod_1.z.string().describe('Email message ID'),

@@ -9,6 +9,7 @@ export interface Database {
   workflows: WorkflowTable;
   executions: ExecutionTable;
   api_keys: ApiKeyTable;
+  refresh_tokens: RefreshTokenTable;
 }
 
 export interface UserTable {
@@ -22,6 +23,10 @@ export interface UserTable {
   updated_at: Date;
   last_login_at?: Date;
   is_active: boolean;
+  email_verified: boolean;
+  failed_login_attempts: number;
+  last_failed_login_at?: Date;
+  token_version: number;
 }
 
 export interface WorkflowTable {
@@ -68,12 +73,26 @@ export interface ApiKeyTable {
   is_active: boolean;
 }
 
+export interface RefreshTokenTable {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  token_id: string;
+  is_used: boolean;
+  expires_at: Date;
+  created_at: Date;
+  used_at?: Date;
+}
+
 // Create database instance
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
-  max: 10,
+  min: 5,
+  max: 20,
   idleTimeoutMillis: 60000,
   connectionTimeoutMillis: 2000,
+  query_timeout: 30000, // 30 seconds statement timeout
+  statement_timeout: 30000, // 30 seconds statement timeout
 });
 
 export const db = new Kysely<Database>({

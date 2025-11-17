@@ -5,17 +5,27 @@ import { logger } from '@/utils/logger';
 import { nodeRegistry, NodeExecutionContext } from '@/services/execution';
 import { workflowService } from '@/services/workflow';
 import Redis from 'ioredis';
+import os from 'os';
 
 // Redis connection for worker
 const redisConfig = {
-  host: 'localhost',
-  port: 6379,
-  ...(process.env.REDIS_PASSWORD && { password: process.env.REDIS_PASSWORD }),
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379'),
+  password: process.env.REDIS_PASSWORD || undefined,
+  lazyConnect: true,
+  maxRetriesPerRequest: 3,
+  retryDelayOnFailover: 100,
+  enableReadyCheck: true,
+  connectionTimeout: 5000,
+  commandTimeout: 5000,
 };
 
 const redis = new Redis(redisConfig);
 
-// Create worker
+// Create worker with CPU-based concurrency
+const cpuCount = os.cpus().length;
+const workerConcurrency = Math.max(1, Math.min(cpuCount, 4)); // Max 4 workers
+
 export const executionWorker = new Worker(
   'workflow-execution',
   async (job: Job) => {
@@ -151,9 +161,13 @@ export const executionWorker = new Worker(
   },
   {
     connection: redis,
-    concurrency: 5,
-    removeOnComplete: 100,
-    removeOnFail: 50,
+    concurrency: workerConcurrency,
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 50 },
+    limiter: {
+      max: 1000, // Max jobs per duration
+      duration: 60000, // Per minute
+    },
   }
 );
 
@@ -275,7 +289,7 @@ executionWorker.on('failed', (job: Job | undefined, error: Error) => {
   });
 });
 
-executionWorker.on('progress', (job: Job, progress: number) => {
+executionWorker.on('progress', (job: Job, progress: number | object) => {
   logger.debug('Job progress', {
     jobId: job.id,
     executionId: job.data.executionId,

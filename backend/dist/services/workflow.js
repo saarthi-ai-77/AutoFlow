@@ -5,6 +5,7 @@ const zod_1 = require("zod");
 const uuid_1 = require("uuid");
 const connection_1 = require("@/database/connection");
 const logger_1 = require("@/utils/logger");
+const redis_cache_1 = require("@/utils/redis-cache");
 // Workflow validation schemas
 exports.WorkflowNodeSchema = zod_1.z.object({
     id: zod_1.z.string(),
@@ -157,6 +158,16 @@ class WorkflowService {
     }
     async getWorkflowById(id, userId) {
         try {
+            // Try cache first
+            const cachedWorkflow = await redis_cache_1.cacheService.get(`workflow:${id}`);
+            if (cachedWorkflow) {
+                // Check access permissions for cached workflow
+                if (!cachedWorkflow.isPublic && cachedWorkflow.ownerId !== userId) {
+                    throw new Error('Access denied');
+                }
+                return cachedWorkflow;
+            }
+            // Cache miss, fetch from database
             const workflow = await connection_1.db
                 .selectFrom('workflows')
                 .selectAll()
@@ -170,7 +181,7 @@ class WorkflowService {
             if (!workflow.is_public && workflow.owner_id !== userId) {
                 throw new Error('Access denied');
             }
-            return {
+            const workflowData = {
                 id: workflow.id,
                 name: workflow.name,
                 description: workflow.description,
@@ -186,6 +197,9 @@ class WorkflowService {
                 createdAt: workflow.created_at,
                 updatedAt: workflow.updated_at,
             };
+            // Cache the workflow for 5 minutes
+            await redis_cache_1.cacheService.set(`workflow:${id}`, workflowData, 300);
+            return workflowData;
         }
         catch (error) {
             logger_1.logger.error('Failed to get workflow by ID', { error, id, userId });
@@ -231,6 +245,8 @@ class WorkflowService {
             if (!updatedWorkflow) {
                 throw new Error('Failed to update workflow');
             }
+            // Invalidate cache
+            await redis_cache_1.cacheService.delete(`workflow:${id}`);
             logger_1.logger.info('Workflow updated successfully', { workflowId: id, userId, version: updatedWorkflow.version });
             return updatedWorkflow;
         }
@@ -255,6 +271,8 @@ class WorkflowService {
                 .set({ is_active: false })
                 .where('id', '=', id)
                 .execute();
+            // Invalidate cache
+            await redis_cache_1.cacheService.delete(`workflow:${id}`);
             logger_1.logger.info('Workflow deleted successfully', { workflowId: id, userId });
         }
         catch (error) {
