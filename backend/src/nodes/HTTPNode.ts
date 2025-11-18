@@ -2,6 +2,80 @@ import { z } from 'zod';
 import { NodeExecutionContext, NodeExecutionResult, NodeDefinition } from '../services/execution';
 import { logger } from '../utils/logger';
 
+// Circuit breaker state
+interface CircuitBreakerState {
+  failures: number;
+  lastFailureTime: number;
+  state: 'closed' | 'open' | 'half-open';
+}
+
+class CircuitBreaker {
+  private states = new Map<string, CircuitBreakerState>();
+  private readonly failureThreshold = 5;
+  private readonly timeoutMs = 60000; // 60 seconds
+
+  private getKey(url: string): string {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname;
+    } catch {
+      return url;
+    }
+  }
+
+  isOpen(url: string): boolean {
+    const key = this.getKey(url);
+    const state = this.states.get(key);
+
+    if (!state) return false;
+
+    if (state.state === 'open') {
+      if (Date.now() - state.lastFailureTime > this.timeoutMs) {
+        // Transition to half-open
+        state.state = 'half-open';
+        state.failures = 0;
+        logger.info('Circuit breaker transitioning to half-open', { url: key });
+        return false;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  recordSuccess(url: string): void {
+    const key = this.getKey(url);
+    const state = this.states.get(key);
+
+    if (state && state.state === 'half-open') {
+      // Close the circuit
+      state.state = 'closed';
+      state.failures = 0;
+      logger.info('Circuit breaker closed', { url: key });
+    }
+  }
+
+  recordFailure(url: string): void {
+    const key = this.getKey(url);
+    let state = this.states.get(key);
+
+    if (!state) {
+      state = { failures: 0, lastFailureTime: 0, state: 'closed' };
+      this.states.set(key, state);
+    }
+
+    state.failures++;
+    state.lastFailureTime = Date.now();
+
+    if (state.failures >= this.failureThreshold) {
+      state.state = 'open';
+      logger.warn('Circuit breaker opened', { url: key, failures: state.failures });
+    }
+  }
+}
+
+const circuitBreaker = new CircuitBreaker();
+
 export class HTTPNode implements NodeDefinition {
   type = 'http';
   name = 'HTTP Request';
@@ -51,6 +125,29 @@ export class HTTPNode implements NodeDefinition {
 
       if (!method) {
         throw new Error('HTTP method is required');
+      }
+
+      // Check circuit breaker
+      if (circuitBreaker.isOpen(url)) {
+        logs.push({
+          level: 'error',
+          message: 'Circuit breaker is open - service temporarily unavailable',
+          timestamp: new Date(),
+          data: { url },
+        });
+
+        return {
+          success: false,
+          outputs: {
+            statusCode: 503,
+            responseData: { error: 'Service temporarily unavailable' },
+            headers: {},
+            duration: 0,
+          },
+          error: 'Service temporarily unavailable',
+          executionTimeMs: 0,
+          logs,
+        };
       }
 
       logs.push({
@@ -151,13 +248,20 @@ export class HTTPNode implements NodeDefinition {
         },
       });
 
-      logger.info('HTTP request completed', { 
+      // Record circuit breaker success or failure
+      if (success) {
+        circuitBreaker.recordSuccess(url);
+      } else {
+        circuitBreaker.recordFailure(url);
+      }
+
+      logger.info('HTTP request completed', {
         executionId: context.executionId,
         nodeId: context.nodeId,
         method,
         url,
         status: response.status,
-        duration 
+        duration
       });
 
       return {
@@ -181,10 +285,16 @@ export class HTTPNode implements NodeDefinition {
         error,
       });
 
-      logger.error('HTTP request failed', { 
-        error, 
+      // Record circuit breaker failure
+      const requestUrl = context.inputs.url;
+      if (requestUrl) {
+        circuitBreaker.recordFailure(requestUrl);
+      }
+
+      logger.error('HTTP request failed', {
+        error,
         executionId: context.executionId,
-        nodeId: context.nodeId 
+        nodeId: context.nodeId
       });
 
       return {

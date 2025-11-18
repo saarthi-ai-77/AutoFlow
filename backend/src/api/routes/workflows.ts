@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { workflowService, CreateWorkflowSchema, UpdateWorkflowSchema } from '@/services/workflow';
 import { executionService } from '@/services/execution';
-import { authenticate } from '@/api/middleware/auth';
+import { authenticate, requirePermission } from '@/api/middleware/auth';
 import { z } from 'zod';
 import { logger } from '@/utils/logger';
 
@@ -11,7 +11,7 @@ const router = Router();
 router.use(authenticate);
 
 // Get all workflows
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', requirePermission('read:workflows'), async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;

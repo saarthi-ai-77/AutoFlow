@@ -213,10 +213,36 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
+export const requirePermission = (permission: string) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = (req as any).user;
+
+    if (!user) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
+    // If authenticated via API key, check permissions
+    if (user.apiKeyId && user.scopes) {
+      if (!user.scopes.includes(permission)) {
+        return res.status(403).json({
+          error: 'API key lacks permission',
+          code: 'FORBIDDEN'
+        });
+      }
+    }
+
+    // JWT users have full access (assuming role-based checks elsewhere)
+    next();
+  };
+};
+
 export const requireApiKey = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const apiKey = req.headers['x-api-key'] as string;
-    
+
     if (!apiKey) {
       return res.status(401).json({
         error: 'API key required',

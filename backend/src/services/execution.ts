@@ -287,7 +287,7 @@ export class ExecutionService {
       }
 
       if (status) {
-        query = query.where('executions.status', '=', status);
+        query = query.where('executions.status', '=', status as any);
       }
 
       if (startDate) {

@@ -35,6 +35,7 @@ export const CreateWorkflowSchema = z.object({
   graph: WorkflowGraphSchema,
   isPublic: z.boolean().default(false),
   tags: z.array(z.string()).default([]),
+  timeout: z.number().min(1).max(300).default(30).optional().describe('Execution timeout in seconds'),
 });
 
 export const UpdateWorkflowSchema = z.object({
@@ -43,6 +44,7 @@ export const UpdateWorkflowSchema = z.object({
   graph: WorkflowGraphSchema.optional(),
   isPublic: z.boolean().optional(),
   tags: z.array(z.string()).optional(),
+  timeout: z.number().min(1).max(300).optional(),
 });
 
 export interface WorkflowNode {
@@ -132,6 +134,8 @@ export class WorkflowService {
           is_public: data.isPublic,
           tags: data.tags,
           execution_count: 0,
+          created_at: now,
+          updated_at: now,
         })
         .execute();
 
@@ -171,7 +175,7 @@ export class WorkflowService {
 
       let query = db
         .selectFrom('workflows')
-        .select([
+        .select((eb) => [
           'id',
           'name',
           'description',
@@ -185,19 +189,17 @@ export class WorkflowService {
           'created_at',
           'updated_at'
         ])
-        .where('is_active', '=', true);
+        .where('is_active', '=', true) as any;
 
       // Filter by owner or public workflows
-      query = query.where((eb) => 
+      query = query.where((eb: any) =>
         eb.or([
           eb('owner_id', '=', ownerId),
           eb('is_public', '=', true)
         ])
-      );
-
-      // Apply filters
+      );      // Apply filters
       if (search) {
-        query = query.where((eb) =>
+        query = query.where((eb: any) =>
           eb.or([
             eb('name', 'ilike', `%${search}%`),
             eb('description', 'ilike', `%${search}%`)
@@ -206,7 +208,7 @@ export class WorkflowService {
       }
 
       if (tags && tags.length > 0) {
-        query = query.where((eb) =>
+        query = query.where((eb: any) =>
           eb('tags', '&&', tags)
         );
       }
@@ -216,7 +218,7 @@ export class WorkflowService {
       }
 
       // Get total count
-      const countQuery = query.select(({ fn }) => fn.countAll().as('count'));
+      const countQuery = query.select(({ fn }: any) => fn.countAll().as('count'));
       const totalResult = await countQuery.executeTakeFirst();
       const total = parseInt((totalResult as any)?.count as string) || 0;
 
@@ -230,7 +232,7 @@ export class WorkflowService {
       const totalPages = Math.ceil(total / limit);
 
       return {
-        workflows: workflows.map(w => ({
+        workflows: workflows.map((w: any) => ({
           id: w.id,
           name: w.name,
           description: w.description,
@@ -349,6 +351,8 @@ export class WorkflowService {
         updateData.version = workflow.version + 1;
       }
 
+      updateData.updated_at = new Date();
+
       await db
         .updateTable('workflows')
         .set(updateData)
@@ -418,6 +422,7 @@ export class WorkflowService {
         graph: originalWorkflow.graph,
         isPublic: false, // Duplicates are private by default
         tags: originalWorkflow.tags,
+        timeout: 30,
       });
 
       logger.info('Workflow duplicated successfully', {
@@ -454,11 +459,10 @@ export class WorkflowService {
 
       const statusStats = await db
         .selectFrom('executions')
-        .select('status' as any)
-        .addSelect(({ fn }) => fn.countAll().as('count') as any)
+        .select(['status', eb => eb.fn.count<number>('id').as('count')])
         .where('workflow_id', '=', workflowId)
         .groupBy('status')
-        .execute();
+        .execute() as any;
 
       return {
         workflowId,
@@ -466,7 +470,7 @@ export class WorkflowService {
         avgExecutionTime: stats?.avg_execution_time ? Math.round(parseFloat(stats.avg_execution_time as string)) : null,
         firstExecution: stats?.first_execution,
         lastExecution: stats?.last_execution,
-        statusBreakdown: statusStats.reduce((acc, stat) => {
+        statusBreakdown: statusStats.reduce((acc: Record<string, number>, stat: any) => {
           acc[stat.status] = parseInt(stat.count as string);
           return acc;
         }, {} as Record<string, number>),
